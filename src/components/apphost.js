@@ -12,6 +12,8 @@ const appName = 'Jellyfin Web';
 const BrowserName = {
     tizen: 'Samsung Smart TV',
     web0s: 'LG Smart TV',
+    titanos: 'Titan OS',
+    vega: 'Vega OS',
     operaTv: 'Opera TV',
     xboxOne: 'Xbox One',
     ps4: 'Sony PS4',
@@ -454,5 +456,3 @@ if (window.addEventListener) {
     window.addEventListener('blur', onAppHidden);
 }
 
-// load app host on module load
-appHost.init();

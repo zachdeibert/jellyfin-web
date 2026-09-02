@@ -28,6 +28,11 @@ function canPlayAv1(videoTestElement) {
         return true;
     }
 
+    if (browser.xboxOne) {
+        // webview2 on xbox may falsely report AV1 as supported
+        return false;
+    }
+
     // av1 main level 5.3
     return !!videoTestElement.canPlayType
         && (videoTestElement.canPlayType('video/mp4; codecs="av01.0.15M.08"').replace(/no/, '')
@@ -137,14 +142,6 @@ function supportsEac3(videoTestElement) {
 }
 
 function supportsAc3InHls(videoTestElement) {
-    // We use hls.js on WebOS 4 and newer and hls.js uses Media Sources Extensions (MSE) API.
-    // On WebOS MSE does support AC-3 and EAC-3 only on audio mp4 file but not on audiovideo mp4
-    // therefore until audio and video is not separated when generating stream and m3u8 this should
-    // return false.
-    if (browser.web0sVersion >= 4) {
-        return false;
-    }
-
     if (browser.tizen || browser.web0s) {
         return true;
     }
@@ -181,6 +178,9 @@ function canPlayAudioFormat(format) {
         if (browser.web0s) {
             // canPlayType lies about OPUS support
             return browser.web0sVersion >= 3.5;
+        } else if (browser.xboxOne) {
+            // webview2 on xbox may falsely report OPUS as supported
+            return false;
         }
 
         typeString = 'audio/ogg; codecs="opus"';
@@ -211,6 +211,13 @@ function testCanPlayMkv(videoTestElement) {
 
     if (browser.tizen || browser.web0s) {
         return true;
+    }
+
+    if (browser.firefox) {
+        // As of Firefox 145, its mkv support is buggy and causes playback issues because it would force preloading the
+        // whole mkv file before playback starts, which is extremely undesirable for streaming.
+        // See https://github.com/jellyfin/jellyfin/issues/15521
+        return false;
     }
 
     if (videoTestElement.canPlayType('video/x-matroska').replace(/no/, '')
@@ -832,6 +839,12 @@ export default function (options) {
         enableFmp4Hls = false;
     }
 
+    // fMP4 in Firefox 149 is largely broken due to bad moof::traf::tfdt handling
+    // https://bugzilla.mozilla.org/show_bug.cgi?id=2026875
+    if (browser.firefox && browser.versionMajor == 149) {
+        enableFmp4Hls = false;
+    }
+
     if (canPlayHls() && browser.enableHlsAudio !== false) {
         profile.TranscodingProfiles.push({
             Container: enableFmp4Hls ? 'mp4' : 'ts',
@@ -924,7 +937,7 @@ export default function (options) {
 
     profile.ContainerProfiles = [];
 
-    if (browser.tizen) {
+    if (browser.tizenVersion < 6.5) {
         // Tizen doesn't support more than 32 streams in a single file
         profile.ContainerProfiles.push({
             Type: 'Video',
@@ -1147,6 +1160,13 @@ export default function (options) {
         hevcProfiles = 'main|main 10';
     }
 
+    // hevc main10 level 6.2
+    if (videoTestElement.canPlayType('video/mp4; codecs="hvc1.2.4.L186"').replace(/no/, '')
+            || videoTestElement.canPlayType('video/mp4; codecs="hev1.2.4.L186"').replace(/no/, '')) {
+        maxHevcLevel = 186;
+        hevcProfiles = 'main|main 10';
+    }
+
     let maxAv1Level = 15; // level 5.3
     const av1Profiles = 'main'; // av1 main covers 4:2:0 8 & 10 bits
 
@@ -1179,17 +1199,26 @@ export default function (options) {
     let vp9VideoRangeTypes = 'SDR';
     let av1VideoRangeTypes = 'SDR';
 
-    if (browser.tizenVersion >= 3) {
+    const isWebOsWithoutDolbyVision = browser.web0s && !supportsDolbyVision(options);
+
+    if (browser.tizenVersion >= 3 || isWebOsWithoutDolbyVision) {
         hevcVideoRangeTypes += '|DOVIWithSDR';
     }
 
     if (supportsHdr10(options)) {
-        hevcVideoRangeTypes += '|HDR10';
-        vp9VideoRangeTypes += '|HDR10';
-        av1VideoRangeTypes += '|HDR10';
+        // HDR10+ videos can be safely played on all HDR10 capable devices, just without the dynamic metadata.
+        hevcVideoRangeTypes += '|HDR10|HDR10Plus';
+        vp9VideoRangeTypes += '|HDR10|HDR10Plus';
+        av1VideoRangeTypes += '|HDR10|HDR10Plus';
 
-        if (browser.tizenVersion >= 3 || browser.vidaa) {
-            hevcVideoRangeTypes += '|DOVIWithHDR10';
+        if (browser.tizenVersion >= 3 || browser.vidaa || isWebOsWithoutDolbyVision) {
+            // Tizen TV does not support Dolby Vision at all, but it can safely play the HDR fallback.
+            // LG TVs that don't support Dolby Vision still can play the HDR fallback without issues.
+            // Advertising the support so that the server doesn't have to remux.
+            hevcVideoRangeTypes += '|DOVIWithHDR10|DOVIWithHDR10Plus|DOVIWithEL|DOVIWithELHDR10Plus|DOVIInvalid';
+            // Although no official tools exist to create AV1+DV files yet, some of our users managed to use community tools to create such files.
+            // These files should also be playable on Tizen TVs.
+            av1VideoRangeTypes += '|DOVIWithHDR10|DOVIWithHDR10Plus|DOVIWithEL|DOVIWithELHDR10Plus|DOVIInvalid';
         }
     }
 
@@ -1198,7 +1227,7 @@ export default function (options) {
         vp9VideoRangeTypes += '|HLG';
         av1VideoRangeTypes += '|HLG';
 
-        if (browser.tizenVersion >= 3) {
+        if (browser.tizenVersion >= 3 || isWebOsWithoutDolbyVision) {
             hevcVideoRangeTypes += '|DOVIWithHLG';
         }
     }
@@ -1209,11 +1238,22 @@ export default function (options) {
             hevcVideoRangeTypes += '|DOVI';
         }
         if (profiles.includes(8)) {
-            hevcVideoRangeTypes += '|DOVIWithHDR10|DOVIWithHLG|DOVIWithSDR';
+            hevcVideoRangeTypes += '|DOVIWithHDR10|DOVIWithHLG|DOVIWithSDR|DOVIWithHDR10Plus';
+        }
+
+        if (browser.web0s) {
+            // For webOS, we should allow direct play of some not fully supported DV profiles to avoid unnecessary remux/transcode
+            // webOS seems to be able to play the fallback of Profile 7 and most invalid profiles
+            hevcVideoRangeTypes += '|DOVIWithEL|DOVIWithELHDR10Plus|DOVIInvalid';
         }
 
         if (supportedDolbyVisionProfileAv1(videoTestElement)) {
-            av1VideoRangeTypes += '|DOVI|DOVIWithHDR10|DOVIWithHLG|DOVIWithSDR';
+            av1VideoRangeTypes += '|DOVI|DOVIWithHDR10|DOVIWithHLG|DOVIWithSDR|DOVIWithHDR10Plus';
+            if (browser.web0s) {
+                // For webOS, we should allow direct play of some not fully supported DV profiles to avoid unnecessary remux/transcode
+                // webOS seems to be able to play the fallback of Profile 7 and most invalid profiles
+                av1VideoRangeTypes += '|DOVIWithEL|DOVIWithELHDR10Plus|DOVIInvalid';
+            }
         }
     }
 
